@@ -1,0 +1,482 @@
+//------------------------------------------------
+//--- 010 Editor v2.0 Binary Template
+//
+//      File: RAR5.0.bt
+//------------------------------------------------
+
+LittleEndian();
+
+local const uint16 SignatureLen = 8;
+const string RarSignature = "Rar!" + '\x1A' + "\x07\x01\x00";
+
+///////////////
+
+struct FileHeadBlock;
+struct OldCommentBlock;
+struct OldSubBlock;
+struct SubBlock;
+
+///////////////
+
+enum <byte> RarBlockType
+{
+	MARKER=0x72, ARCHIVE, FILE_OR_DIR, COMMENT_OLD, AV_OLD_1, SUBBLOCK_OLD, RR_OLD, AV_OLD_2, SUBBLOCK, _END_
+};
+
+enum <byte> HeaderType
+{
+	MAIN_ACHIVE_HEADER=0x1, FILE_HEADER=2, SERVICE_HEADER, ENCRYPTION_HEADER, END_OF_ARCHIVE_HEADER
+};
+
+////////////////
+
+local uint16 _flags = 0;
+
+/// info:
+local uquad iBlocksCounter = 0;
+local uquad iFiles = 0;
+local uquad iDirs = 0;
+local uquad iComments = 0;
+local uquad iSubBlocks = 0;
+local uquad iUniNames = 0;
+local uquad iBadCRCCounter = 0;
+local ubyte iMinVerToUnpack = 0xff;
+local ubyte iMaxVerToUnpack = 0;
+local uquad iTotalUnpackedSize = 0;
+local uint iAV1 = 0;
+local uint iAV2 = 0;
+
+////////////////
+
+enum <ubyte> OsType 
+{ 
+	_MS_DOS, _OS_2, _Win32, _Unix, _Mac_OS, _BeOS 
+};
+
+enum <char> PackMethod 
+{ 
+	Store='0', Fastest, Fast, Normal, Good, Best 
+};
+
+enum <uint16> SubType_OldStyle
+{
+	OS2_EA = 0x0100
+};
+
+struct UnixStyleAttrs
+{
+	uint32 owner_may_eXecute : 1;
+	uint32 owner_may_Write : 1;
+	uint32 owner_may_Read : 1;
+
+	uint32 group_may_eXecute : 1;
+	uint32 gorup_may_Write : 1;
+	uint32 group_may_Read : 1;
+
+	uint32 everybody_may_eXecute : 1;
+	uint32 everybody_may_Write : 1;
+	uint32 everybody_may_Read : 1;
+
+	uint32 _s : 1; // ??
+	uint32 _s : 1; // ??
+	
+	uint32 _unused : 21;
+};
+
+struct DosFileAttrs
+{
+	uint32 READONLY : 1; //              0x00000001  
+	uint32 HIDDEN : 1; //                0x00000002  
+	uint32 SYSTEM : 1; //                0x00000004  
+	uint32 VOLUME : 1;
+	uint32 DIRECTORY : 1; //             0x00000010
+	uint32 ARCHIVE : 1; //               0x00000020
+	uint32 _res : 26;
+};
+
+struct WinFileAttrs
+{
+	uint32 READONLY : 1;
+	uint32 HIDDEN : 1;
+	uint32 SYSTEM : 1;
+	uint32 VOLUME : 1;
+	uint32 DIRECTORY : 1;
+	uint32 ARCHIVE : 1;
+	uint32 DEVICE : 1;
+	uint32 NORMAL : 1;
+	uint32 TEMPORARY : 1;
+	uint32 SPARSE_FILE : 1;
+	uint32 REPARSE_POINT : 1;
+	uint32 COMPRESSED : 1;
+	uint32 OFFLINE : 1;
+	uint32 NOT_CONTENT_INDEXED : 1;
+	uint32 ENCRYPTED : 1;
+	uint32 _res2 : 17;
+};
+
+struct CommonBlockFlags
+{
+	ushort _reserved : 14;
+	ushort OLD_VERSION_IGNORE : 1;
+	ushort ADD_SIZE_PRESENT : 1;
+};
+
+struct MainHeadFlags
+{
+	ubyte ARCHIVE_VOLUME : 1;
+	ubyte ARCHIVE_COMMENT_PRESENT : 1;
+	ubyte ARCHIVE_LOCKED : 1;
+	ubyte ARCHIVE_SOLID : 1;
+	ubyte NEW_VOLUME_NAMING : 1; 
+	ubyte AV_PRESENT : 1;
+	ubyte RECOVERY_PRESENT : 1;
+	ubyte BLOCK_HEADERS_ENCRYPTED : 1;
+	ubyte IS_FIRST_VOLUME : 1;
+	ubyte _reserved : 5;
+	ubyte OLD_VERSION_IGNORE : 1;
+	ubyte ADD_SIZE_PRESENT : 1;
+};
+
+
+enum <byte> FileDictType
+{
+	_64K, _128K, _256K, _512K, _1024K, _2048K, _4096K, _Directory
+};
+
+struct FileHeadFlags
+{
+	ubyte from_PREV_VOLUME : 1;
+	ubyte to_NEXT_VOLUME : 1;
+	ubyte PASSWORD_ENCRYPTED : 1;
+	ubyte FILE_COMMENT_PRESENT : 1;
+	ubyte SOLID : 1;
+	FileDictType DICTIONARY : 3;
+	ubyte HIGH_SIZE : 1;
+	ubyte has_UNICODE_FILENAME : 1;
+	ubyte ENCRYPTION_SALT : 1;
+	ubyte IS_OLD_FILE_VERSION : 1;
+	ubyte EXTENDED_TIME_INFO : 1;
+	ubyte _reserved : 1;
+	ubyte OLD_VERSION_IGNORE : 1;
+	ubyte ADD_SIZE_PRESENT : 1;
+};
+
+
+
+typedef struct vint 
+{
+    local uint32 VALUE = 0;
+    local uint32 count = 0; 
+    local ubyte b_i;
+    do 
+    {
+        b_i = ReadByte(FTell()+count);
+        //Printf("byte_%d=0x%x\n", count, b_i);
+        VALUE +=  (b_i & 0x7f) << (count * 7);
+
+        count++;
+
+    }while (b_i & 0x80);
+
+    ubyte VALUE_bytes[count];
+    //Printf("end\n");
+
+}VINT<read=vint_read>;
+
+string vint_read(VINT& v)
+{
+    string s;
+    SPrintf(s, "0x%x\n", v.VALUE);
+    
+    return s;
+}
+
+string fileTimeConvert(uint64 time)
+{
+    return FileTimeToString(time);
+}
+
+typedef struct RarBlock
+{
+	local quad iOfs = FTell();
+
+	uint32 HEAD_CRC <format=hex, fgcolor=cRed>;
+
+    VINT headSize;
+
+    VINT headType;
+
+    VINT headFlags;
+
+    //Printf("headType.VALUE = 0x%x\n", headType.VALUE);
+
+    if (headFlags.VALUE & 0x01)
+    {
+        VINT extra_area_size;
+    }
+    if (headFlags.VALUE & 0x02)
+    {
+        VINT data_area_size;
+    }
+
+    if (headType.VALUE==1)
+    {
+        VINT ArchiveFlags;
+        if (ArchiveFlags.VALUE & 0x2)
+        {
+            VINT volume_num;
+        }
+
+        if (headFlags.VALUE & 0x01)
+        {
+            VINT locator_record_size;
+            VINT locator_record_type;
+            VINT locator_record_flags;
+
+            if (locator_record_flags.VALUE & 0x01)
+            {
+                 VINT quick_open_offset;
+            }
+            if (locator_record_flags.VALUE & 0x02)
+            {
+                 VINT recovery_record_offset;
+            }
+        }
+        
+    }
+    else if (headType.VALUE==2 || headType.VALUE==3)
+    {
+        VINT file_flags;
+        VINT unpacked_size;
+        VINT attributes;
+        if (file_flags.VALUE & 0x2)
+            uint32 mtime;
+        if (file_flags.VALUE & 0x4)
+            uint32 data_crc32<format=hex>;
+        VINT compression_info;
+        VINT host_os;
+        VINT name_length;
+        char name[name_length.VALUE];
+
+        if (headFlags.VALUE & 0x01)
+        {
+            VINT extra_record_size;
+            VINT extra_record_type;
+            if (extra_record_type.VALUE==0x1)
+            {
+                ubyte extra_recode_data[extra_record_size.VALUE-2];
+            }
+            else if (extra_record_type.VALUE==0x2)
+            {
+                ubyte extra_recode_data[extra_record_size.VALUE-2];
+            }
+            else if (extra_record_type.VALUE==0x3)
+            {
+                VINT extra_record_flags;
+                if ((extra_record_flags.VALUE & 0x1)==0) //stored in windows time formate
+                {
+                    if (extra_record_flags.VALUE & 0x2) 
+                        uint64 mtime<read=fileTimeConvert>;
+                    if (extra_record_flags.VALUE & 0x4)
+                        uint64 ctime<read=fileTimeConvert>;
+                    if (extra_record_flags.VALUE & 0x8)
+                        uint64 atime<read=fileTimeConvert>;
+                }
+                else
+                {
+                    //Unix time_t
+                    if (extra_record_flags.VALUE & 0x2) 
+                        uint32 mtime;
+                    if (extra_record_flags.VALUE & 0x4)
+                        uint32 ctime;
+                    if (extra_record_flags.VALUE & 0x8)
+                        uint32 atime;
+                    if (extra_record_flags.VALUE & 0x2 && extra_record_flags.VALUE & 0x10) 
+                        uint32 mtime_seconds;
+                    if (extra_record_flags.VALUE & 0x4 && extra_record_flags.VALUE & 0x10)
+                        uint32 ctime_seconds;
+                    if (extra_record_flags.VALUE & 0x8 && extra_record_flags.VALUE & 0x10)
+                        uint32 atime_seconds;
+                }
+                
+            }
+            
+        }
+        if (headFlags.VALUE & 0x02)
+        {
+            ubyte data_area[data_area_size.VALUE]<format=hex, fgcolor=cBlue>;
+        }
+    }
+    else if (headType.VALUE==5)
+    {
+        ubyte end_of_archieve;
+    }
+    
+}RAR_BLOCK<read=rar_block_read>;
+
+string rar_block_read(RAR_BLOCK & block)
+{
+    string s;
+    if (block.headType.VALUE==1)
+        s = "Main archive header";
+    if (block.headType.VALUE==2)
+        s = "File header";
+    if (block.headType.VALUE==3)
+        s = "Service header";
+    if (block.headType.VALUE==4)
+        s = "Archive encryption header";
+    if (block.headType.VALUE==5)
+        s = "End of archive header";
+
+    return s;
+}
+
+struct FileHeadBlock
+{
+	uint32 UnpackedSize;
+	iTotalUnpackedSize += UnpackedSize;
+
+	OsType Host_OS;
+	uint32 FileCRC32 <format=hex>;
+	DOSTIME FileTime;
+	DOSDATE FileDate;
+	ubyte VersionToUnpack;
+
+	if (VersionToUnpack > iMaxVerToUnpack)
+		iMaxVerToUnpack = VersionToUnpack;
+	
+	if (VersionToUnpack < iMinVerToUnpack)
+		iMinVerToUnpack = VersionToUnpack;
+
+	PackMethod Method;
+	uint16 NameSize;
+
+	switch (Host_OS) {
+	case _Win32:
+		WinFileAttrs Attributes;
+		break;
+	case _MS_DOS:
+	case _Mac_OS:
+	case _OS_2:
+		DosFileAttrs Attributes;
+		break;
+	case _Unix:
+	case _BeOS:
+		UnixStyleAttrs Attributes;
+		break;
+	default:
+		uint32 Attributes <format=binary>;
+	}
+
+	if (_flags & 0x0100)
+	{
+		uint32 HIGH_PACK_SIZE;
+		uint32 HIGH_UNP_SIZE;
+
+		iTotalUnpackSize += (HIGH_UNP_SIZE << 32);
+	}
+
+	if (_flags & 0x0200)
+	{
+		++iUniNames;
+
+		string FileName;
+		uint16 WideFileNameData[(NameSize-sizeof(FileName))/2];
+	}
+	else
+		char FileName[NameSize];
+
+	if (_flags & 0x0008)
+	{
+		RarBlock FileComment; // used in RAR v. <= 3.11
+	}
+
+	if (_flags & 0x0400)
+		uquad SALT <format=hex>;
+};
+
+/////////////////
+
+struct OldCommentBlock {
+	++iComments;
+
+	uint16 UnpackedSize;
+	ubyte VersionToUnpack;
+	PackMethod Method;
+	uint16 CommentCRC <format=hex>;
+	
+	Printf("*** Old style CommentBlock:  (Block #%Lu)\n", iBlocksCounter);
+};
+
+struct OldSubBlock {
+	++iSubBlocks;
+	
+	SubType_OldStyle SubType;
+	ubyte _reserved;
+	
+	Printf("*** Old style SubBlock: %u (Block #%Lu)\n", SubType, iBlocksCounter);
+};
+
+struct SubBlock {
+	++iSubBlocks;
+
+	ubyte _unknown_to_me_1[15];
+	ubyte SubTypeLen;
+	ubyte _unknown_to_me_2[5];
+	char SubType[SubTypeLen];
+
+	Printf("*** SubBlock: %s (Block #%Lu)\n", SubType+'\0', iBlocksCounter);
+	switch (SubType) {
+	case "CMT":
+		++iComments;
+		break;
+	case "AV":
+		Printf("*** Authenticity Verification info (RAR v. 3.x) @ block #%Lu.\n", iBlocksCounter);
+		break;
+	case "RR":
+		Printf("*** Recovery Record was found (RAR v. 3.x) @ block #%Lu.\n", iBlocksCounter);
+		break;
+	}
+};
+
+/////////////////
+
+local string fn = GetFileName();
+local quad SignaturePos = 0;
+local char Signature[SignatureLen];
+
+if (Strstr(fn, ".rar") != Strlen(fn)-4)
+{
+	Warning("Seeking for RAR signature...");
+
+	local quad _p = FindFirst(RarSignature);
+	if (_p >= 0)
+		FSeek(_p);
+	else
+	{
+		Warning("Not a RAR archive!");
+		return -1;
+	}
+
+	Warning("RAR signature found at 0x%08x.", _p);
+	Printf("RAR signature found at 0x%08x.\n", _p);
+}
+else
+{
+	ReadBytes(Signature, SignaturePos, SignatureLen);
+
+	if (Strcmp(Signature, RarSignature))
+	{
+		Warning("Invalid RAR Archive Signature!");
+		return SignaturePos;
+	}
+}
+
+ubyte Magic[SignatureLen];
+
+
+while (!FEof())
+{  
+	RAR_BLOCK block;
+}
+
